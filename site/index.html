@@ -1,0 +1,749 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>觀天氣象台</title>
+<meta name="description" content="全球 159 個地點的目前天氣、48 小時與 7 天預報、空氣品質，資料由 Python 爬蟲每小時從 Open-Meteo 抓取。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600&family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@700;900&display=swap">
+<style>
+/* 版面概念：上方為時鐘與選擇器的「觀測台頭」，下方左為目前觀測、右為地圖，再往下是逐時與 7 天預報帶 */
+:root {
+  --bg: #edf1f4;
+  --surface: #ffffff;
+  --ink: #132230;
+  --muted: #586979;
+  --line: #d2dae1;
+  --accent: #1f4fd1;
+  --accent-soft: #e2e9fb;
+  --warm: #cf5a24;
+  --cool: #2a7fb8;
+  --sun: #e39a2b;
+  --cloud: #9aa8b5;
+  --land: #d7dfe6;
+  --land-line: #c2ccd5;
+  --sea: #f6f8fa;
+  --good: #2f8a4c;
+  --mid: #b98a12;
+  --bad: #c2412d;
+  --font-display: "Noto Serif TC", "Songti TC", "PMingLiU", serif;
+  --font-body: "Noto Sans TC", "Microsoft JhengHei", "PingFang TC", system-ui, sans-serif;
+  --font-data: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0c131a; --surface: #131d27; --ink: #e3eaf0; --muted: #8b9daf; --line: #243341;
+    --accent: #7096ff; --accent-soft: #1b2948; --warm: #f08a55; --cool: #5db0e4; --sun: #f2b84b;
+    --cloud: #7d8d9c; --land: #1d2a36; --land-line: #2b3b4a; --sea: #0f1820;
+    --good: #5cc07a; --mid: #e0b43c; --bad: #f06b55; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0c131a; --surface: #131d27; --ink: #e3eaf0; --muted: #8b9daf; --line: #243341;
+  --accent: #7096ff; --accent-soft: #1b2948; --warm: #f08a55; --cool: #5db0e4; --sun: #f2b84b;
+  --cloud: #7d8d9c; --land: #1d2a36; --land-line: #2b3b4a; --sea: #0f1820;
+  --good: #5cc07a; --mid: #e0b43c; --bad: #f06b55; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+:root { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+[hidden] { display: none !important; }
+img { max-width: 100%; }
+body {
+  margin: 0;
+  background: var(--bg); color: var(--ink);
+  font-family: var(--font-body); font-size: 15px; line-height: 1.6;
+}
+.wrap {
+  max-width: 1240px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px 40px;
+  display: grid; gap: 18px;
+}
+.num { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+.label { font-size: 12px; letter-spacing: .08em; color: var(--muted); }
+button, select, input { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---- 台頭 ---- */
+.masthead {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px 28px; align-items: end;
+  border-bottom: 2px solid var(--ink); padding-bottom: 14px;
+}
+.brand h1 {
+  font-family: var(--font-display); font-weight: 900; font-size: clamp(28px, 4vw, 40px);
+  line-height: 1.1; margin: 0; letter-spacing: .04em; text-wrap: balance;
+}
+.brand p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+.clocks { display: flex; gap: 28px; flex-wrap: wrap; }
+.clock { display: grid; gap: 0; min-width: 0; }
+.clock .time { font-family: var(--font-data); font-weight: 300; font-size: clamp(28px, 4.4vw, 42px); line-height: 1.05; font-variant-numeric: tabular-nums; }
+.clock .meta { font-size: 13px; color: var(--muted); }
+.clock.local .time { color: var(--accent); }
+
+/* ---- 選擇器 ---- */
+.picker { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.field { display: grid; gap: 4px; min-width: 0; position: relative; }
+.field input, .field select {
+  width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface);
+}
+.suggest {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 20; margin: 4px 0 0; padding: 4px;
+  list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+  max-height: 300px; overflow-y: auto; box-shadow: 0 10px 30px rgba(10, 20, 30, .18);
+}
+.suggest li { padding: 7px 10px; border-radius: 4px; cursor: pointer; display: flex; justify-content: space-between; gap: 12px; }
+.suggest li small { color: var(--muted); white-space: nowrap; }
+.suggest li[aria-selected="true"], .suggest li:hover { background: var(--accent-soft); }
+
+/* ---- 主區 ---- */
+.main { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 18px; align-items: start; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 18px; min-width: 0; }
+.panel h2 { font-family: var(--font-display); font-size: 17px; margin: 0 0 12px; letter-spacing: .04em; }
+
+.place-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.place-name { font-family: var(--font-display); font-weight: 900; font-size: 28px; margin: 0; line-height: 1.2; }
+.place-sub { color: var(--muted); font-size: 13px; }
+.now { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 18px; align-items: center; margin: 14px 0 6px; }
+.now-icon { width: 92px; height: 92px; }
+.now-temp { font-family: var(--font-data); font-weight: 300; font-size: 64px; line-height: 1; font-variant-numeric: tabular-nums; }
+.now-temp sup { font-size: 24px; vertical-align: top; position: relative; top: 8px; }
+.now-desc { font-size: 17px; font-weight: 500; }
+.now-hl { color: var(--muted); font-size: 13px; }
+.note { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+.note.warn { color: var(--bad); }
+
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin-top: 14px; }
+.stat { background: var(--surface); padding: 10px 12px; display: grid; gap: 2px; min-width: 0; }
+.stat b { font-family: var(--font-data); font-weight: 400; font-size: 17px; font-variant-numeric: tabular-nums; }
+.stat b small { font-size: 12px; color: var(--muted); }
+.wind-arrow { display: inline-block; width: 14px; height: 14px; vertical-align: -1px; color: var(--accent); }
+
+.air { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px; align-items: center; margin-top: 16px; }
+.aqi-dial { width: 84px; height: 84px; }
+.chip { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; font-weight: 500; border: 1px solid currentColor; }
+.chip.good { color: var(--good); } .chip.mid { color: var(--mid); } .chip.bad { color: var(--bad); }
+.air-rows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 14px; font-size: 13px; }
+.air-rows span { color: var(--muted); }
+.sunline { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 14px; font-size: 13px; color: var(--muted); }
+.sunline b { color: var(--ink); font-family: var(--font-data); font-weight: 400; }
+
+/* ---- 地圖 ---- */
+.map-tools { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; background: var(--surface); padding: 6px 12px; cursor: pointer; font-size: 13px; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.map-box { position: relative; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--sea); }
+#map { display: block; width: 100%; height: auto; touch-action: none; }
+#map.boxing { cursor: crosshair; }
+#map .country { fill: var(--land); stroke: var(--land-line); stroke-width: .6; vector-effect: non-scaling-stroke; }
+#map .graticule { fill: none; stroke: var(--line); stroke-width: .5; vector-effect: non-scaling-stroke; }
+#map .dot { stroke: var(--surface); stroke-width: 1; vector-effect: non-scaling-stroke; cursor: pointer; }
+#map .dot.sel { stroke: var(--ink); stroke-width: 2.5; }
+#map .sel-label { font-family: var(--font-body); font-weight: 700; fill: var(--ink); paint-order: stroke; stroke: var(--sea); stroke-width: 3px; stroke-linejoin: round; pointer-events: none; }
+#map .brush { fill: var(--accent); fill-opacity: .12; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+.legend { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); margin-top: 8px; flex-wrap: wrap; }
+.legend .ramp { width: 160px; height: 8px; border-radius: 4px; }
+.map-hint { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+
+.range { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 12px; }
+.range-sum { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 8px 0; }
+.range-sum div { display: grid; }
+.range-sum b { font-family: var(--font-data); font-weight: 400; font-size: 20px; font-variant-numeric: tabular-nums; }
+.range-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 150px; overflow-y: auto; }
+.range-list button { border: 1px solid var(--line); background: var(--bg); border-radius: 999px; padding: 3px 10px; font-size: 13px; cursor: pointer; }
+.range-list button:hover { border-color: var(--accent); }
+.range-list button .num { color: var(--muted); margin-left: 4px; }
+
+/* ---- 逐時 ---- */
+.hourly-scroll { overflow-x: auto; margin: 0 -4px; padding: 0 4px 6px; }
+#hourly { display: block; }
+#hourly text { font-family: var(--font-data); fill: var(--muted); font-size: 11px; }
+#hourly .t-label { fill: var(--ink); font-size: 12px; }
+#hourly .day-label { fill: var(--ink); font-family: var(--font-body); font-weight: 700; font-size: 12px; }
+#hourly .now-mark { fill: var(--accent); font-family: var(--font-body); font-weight: 700; }
+
+/* ---- 7 天 ---- */
+.days { display: grid; gap: 0; }
+.day { display: grid; grid-template-columns: 74px 34px minmax(0, 1fr) 52px 44px minmax(80px, 2fr) 44px; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.day:first-child { border-top: 0; }
+.day .dname { font-weight: 700; }
+.day .dname small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; font-family: var(--font-data); }
+.day .desc { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.day .pop { color: var(--cool); font-size: 13px; }
+.day .lo { color: var(--cool); text-align: right; }
+.day .hi { color: var(--warm); }
+.bar { position: relative; height: 6px; background: var(--bg); border-radius: 3px; }
+.bar i { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
+
+.foot { color: var(--muted); font-size: 12px; display: grid; gap: 4px; border-top: 1px solid var(--line); padding-top: 12px; }
+.foot a { color: var(--accent); }
+.loading { padding: 40px 0; text-align: center; color: var(--muted); }
+
+@media (max-width: 900px) {
+  .main { grid-template-columns: minmax(0, 1fr); }
+  .picker { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .picker .field:first-child { grid-column: 1 / -1; }
+}
+@media (max-width: 560px) {
+  .masthead { grid-template-columns: minmax(0, 1fr); }
+  .clocks { gap: 18px; }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .range-sum { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .day { grid-template-columns: 58px 30px 44px 40px minmax(50px, 1fr) 40px; gap: 8px; }
+  .day .desc { display: none; }
+  .now-temp { font-size: 54px; }
+  .now-icon { width: 74px; height: 74px; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="masthead">
+    <div class="brand">
+      <h1>觀天氣象台</h1>
+      <p id="freshness">正在載入觀測資料…</p>
+    </div>
+    <div class="clocks" aria-live="off">
+      <div class="clock local">
+        <span class="label" id="localLabel">當地時間</span>
+        <span class="time" id="localTime">--:--:--</span>
+        <span class="meta" id="localMeta">&nbsp;</span>
+      </div>
+      <div class="clock">
+        <span class="label">我的時間</span>
+        <span class="time" id="myTime">--:--:--</span>
+        <span class="meta" id="myMeta">&nbsp;</span>
+      </div>
+    </div>
+  </header>
+
+  <section class="picker" aria-label="選擇地點">
+    <div class="field">
+      <label class="label" for="search">搜尋地點</label>
+      <input id="search" type="search" autocomplete="off" placeholder="例如：信義區、東京、Paris" role="combobox" aria-expanded="false" aria-controls="suggest">
+      <ul class="suggest" id="suggest" role="listbox" hidden></ul>
+    </div>
+    <div class="field">
+      <label class="label" for="country">國家／地區</label>
+      <select id="country"></select>
+    </div>
+    <div class="field">
+      <label class="label" for="city">城市／行政區</label>
+      <select id="city"></select>
+    </div>
+  </section>
+
+  <div class="main">
+    <section class="panel" id="current" aria-live="polite"><div class="loading">載入中…</div></section>
+
+    <section class="panel">
+      <div class="map-tools">
+        <h2 style="margin:0">地圖選點</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <div class="seg" role="group" aria-label="地圖模式">
+            <button id="modePick" aria-pressed="true">點選</button>
+            <button id="modeBox" aria-pressed="false">框選範圍</button>
+          </div>
+          <div class="seg" role="group" aria-label="縮放">
+            <button id="zoomIn" title="放大">＋</button>
+            <button id="zoomOut" title="縮小">－</button>
+            <button id="zoomSel" title="移到所選地點">所選</button>
+            <button id="zoomReset" title="看全世界">全球</button>
+          </div>
+        </div>
+      </div>
+      <div class="map-box"><svg id="map" viewBox="0 0 960 500" role="img" aria-label="世界地圖，圓點為觀測地點，顏色代表目前氣溫"></svg></div>
+      <div class="legend">
+        <span>目前氣溫</span><span class="num">-10°</span><canvas class="ramp" id="ramp" width="160" height="8"></canvas><span class="num">40°</span>
+      </div>
+      <p class="map-hint" id="mapHint">點地圖任一處，會選到最近的觀測點。滾輪或雙指可縮放。</p>
+      <div class="range" id="range" hidden></div>
+    </section>
+  </div>
+
+  <section class="panel">
+    <h2>未來 48 小時</h2>
+    <div class="hourly-scroll"><svg id="hourly" height="190"></svg></div>
+  </section>
+
+  <section class="panel">
+    <h2>7 天預報</h2>
+    <div class="days" id="days"></div>
+  </section>
+
+  <footer class="foot">
+    <span>天氣與空氣品質資料：<a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo.com</a>（CC BY 4.0），由 Python 爬蟲批次抓取並整理後發布。時鐘依各地時區即時計算。</span>
+    <span>同一市區的相鄰行政區可能落在同一個模式網格內，數值會相同或非常接近。</span>
+  </footer>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/topojson/3.0.2/topojson.min.js"></script>
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const state = { data: null, cities: [], byId: new Map(), sel: null, mode: "pick", boxIds: [] };
+
+  // ---------- 天氣代碼（WMO）→ 中文與圖示類型 ----------
+  const WMO = {
+    0: ["晴", "clear"], 1: ["大致晴朗", "clear"], 2: ["局部多雲", "partly"], 3: ["陰", "cloudy"],
+    45: ["霧", "fog"], 48: ["霧凇", "fog"],
+    51: ["小毛毛雨", "drizzle"], 53: ["毛毛雨", "drizzle"], 55: ["濃毛毛雨", "drizzle"],
+    56: ["凍毛毛雨", "drizzle"], 57: ["強凍毛毛雨", "drizzle"],
+    61: ["小雨", "rain"], 63: ["中雨", "rain"], 65: ["大雨", "rain"], 66: ["凍雨", "rain"], 67: ["強凍雨", "rain"],
+    71: ["小雪", "snow"], 73: ["中雪", "snow"], 75: ["大雪", "snow"], 77: ["雪粒", "snow"],
+    80: ["短暫陣雨", "rain"], 81: ["陣雨", "rain"], 82: ["強陣雨", "rain"], 85: ["陣雪", "snow"], 86: ["強陣雪", "snow"],
+    95: ["雷雨", "thunder"], 96: ["雷雨伴冰雹", "thunder"], 99: ["強雷雨伴冰雹", "thunder"],
+  };
+  const wmo = (c) => WMO[c] || ["未知", "cloudy"];
+
+  // ---------- 手繪天氣圖示（SVG，顏色取自主題變數） ----------
+  const CLOUD = '<path d="M20 46h28a10 10 0 0 0 0-20 14 14 0 0 0-27-3A11 11 0 0 0 20 46z" fill="var(--cloud)"/>';
+  function icon(code, isDay = 1) {
+    const kind = wmo(code)[1];
+    const sun = isDay
+      ? '<circle cx="24" cy="22" r="10" fill="var(--sun)"/><g stroke="var(--sun)" stroke-width="3" stroke-linecap="round">' +
+        [0, 45, 90, 135, 180, 225, 270, 315].map(a => { const r = a * Math.PI / 180; return `<line x1="${24 + Math.cos(r) * 14}" y1="${22 + Math.sin(r) * 14}" x2="${24 + Math.cos(r) * 18}" y2="${22 + Math.sin(r) * 18}"/>`; }).join("") + "</g>"
+      : '<path d="M30 8a14 14 0 1 0 12 20A11 11 0 0 1 30 8z" fill="var(--sun)"/>';
+    let body = "";
+    if (kind === "clear") body = isDay ? `<g transform="translate(8 10)">${sun}</g>` : '<path d="M36 10a20 20 0 1 0 16 30A16 16 0 0 1 36 10z" fill="var(--sun)"/>';
+    else if (kind === "partly") body = sun + CLOUD;
+    else if (kind === "cloudy") body = '<path d="M14 40h26a9 9 0 0 0 0-18 13 13 0 0 0-25-2A10 10 0 0 0 14 40z" fill="var(--cloud)" opacity=".55"/>' + CLOUD;
+    else if (kind === "fog") body = CLOUD + '<g stroke="var(--cloud)" stroke-width="3" stroke-linecap="round"><line x1="14" y1="52" x2="50" y2="52"/><line x1="20" y1="58" x2="44" y2="58"/></g>';
+    else if (kind === "drizzle") body = CLOUD + '<g fill="var(--cool)"><circle cx="24" cy="54" r="2"/><circle cx="34" cy="57" r="2"/><circle cx="44" cy="54" r="2"/></g>';
+    else if (kind === "rain") body = CLOUD + '<g stroke="var(--cool)" stroke-width="3" stroke-linecap="round"><line x1="24" y1="51" x2="21" y2="59"/><line x1="34" y1="51" x2="31" y2="59"/><line x1="44" y1="51" x2="41" y2="59"/></g>';
+    else if (kind === "snow") body = CLOUD + '<g fill="var(--cool)"><circle cx="24" cy="54" r="2.6"/><circle cx="34" cy="58" r="2.6"/><circle cx="44" cy="54" r="2.6"/></g>';
+    else if (kind === "thunder") body = CLOUD + '<path d="M34 46l-6 10h6l-3 8 9-12h-6l3-6z" fill="var(--sun)"/>';
+    return `<svg viewBox="0 0 64 64" aria-hidden="true">${body}</svg>`;
+  }
+
+  // ---------- 時間工具：用 Intl 依時區換算 ----------
+  const pad = (n) => String(n).padStart(2, "0");
+  const WEEK = ["日", "一", "二", "三", "四", "五", "六"];
+  function partsIn(tz, date = new Date()) {
+    const p = {};
+    new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", weekday: "short" })
+      .formatToParts(date).forEach(x => { p[x.type] = x.value; });
+    return { y: +p.year, mo: +p.month, d: +p.day, h: +p.hour, mi: +p.minute, s: +p.second, wd: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(p.weekday) };
+  }
+  function offsetMin(tz, date = new Date()) {
+    const p = partsIn(tz, date);
+    const asUtc = Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.s);
+    return Math.round((asUtc - Math.floor(date.getTime() / 1000) * 1000) / 60000);
+  }
+  const fmtOffset = (m) => `UTC${m >= 0 ? "+" : "−"}${Math.floor(Math.abs(m) / 60)}${Math.abs(m) % 60 ? ":" + pad(Math.abs(m) % 60) : ""}`;
+  const naiveMs = (s) => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10), +(s.slice(11, 13) || 0), +(s.slice(14, 16) || 0));
+  const myTz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+  function tick() {
+    const now = new Date();
+    const m = partsIn(myTz, now);
+    $("myTime").textContent = `${pad(m.h)}:${pad(m.mi)}:${pad(m.s)}`;
+    $("myMeta").textContent = `${m.mo}月${m.d}日 週${WEEK[m.wd]} · ${fmtOffset(offsetMin(myTz, now))}`;
+    const c = state.sel;
+    if (c) {
+      const l = partsIn(c.tz, now);
+      $("localTime").textContent = `${pad(l.h)}:${pad(l.mi)}:${pad(l.s)}`;
+      const diff = (offsetMin(c.tz, now) - offsetMin(myTz, now)) / 60;
+      const rel = diff === 0 ? "與你同時區" : `比你${diff > 0 ? "快" : "慢"} ${Math.abs(diff)} 小時`;
+      $("localMeta").textContent = `${l.mo}月${l.d}日 週${WEEK[l.wd]} · ${fmtOffset(offsetMin(c.tz, now))} · ${rel}`;
+      $("localLabel").textContent = `${c.name}當地時間`;
+    }
+    if (state.data && now.getSeconds() === 0) renderFreshness();
+  }
+
+  function renderFreshness() {
+    const gen = new Date(state.data.generatedAt);
+    const mins = Math.round((Date.now() - gen) / 60000);
+    const ago = mins < 60 ? `${mins} 分鐘前` : mins < 1440 ? `${Math.round(mins / 60)} 小時前` : `${Math.round(mins / 1440)} 天前`;
+    const p = partsIn(myTz, gen);
+    $("freshness").textContent = `${state.data.count} 個觀測點 · 資料更新於 ${p.mo}/${p.d} ${pad(p.h)}:${pad(p.mi)}（${ago}）`;
+  }
+
+  // ---------- 依「現在」找出逐時與每日資料的位置 ----------
+  function nowIndex(c) {
+    const l = partsIn(c.tz);
+    const nowNaive = Date.UTC(l.y, l.mo - 1, l.d, l.h);
+    return Math.round((nowNaive - naiveMs(c.hourly.start)) / 3600000);
+  }
+  function todayIndex(c) {
+    const l = partsIn(c.tz);
+    return c.daily.date.indexOf(`${l.y}-${pad(l.mo)}-${pad(l.d)}`);
+  }
+
+  // ---------- 目前天氣面板 ----------
+  const COMPASS = ["北", "東北", "東", "東南", "南", "西南", "西", "西北"];
+  function aqiClass(a) { return a == null ? "" : a <= 50 ? "good" : a <= 100 ? "mid" : "bad"; }
+  function uvText(u) { return u == null ? "—" : u < 3 ? "低" : u < 6 ? "中" : u < 8 ? "高" : u < 11 ? "過量" : "危險"; }
+
+  function renderCurrent() {
+    const c = state.sel, cur = c.current, hi = nowIndex(c), di = Math.max(0, todayIndex(c));
+    const ageMin = (Date.now() - new Date(state.data.generatedAt)) / 60000;
+    let temp = cur.temp, code = cur.code, isDay = cur.isDay, note = `觀測時間 ${cur.time.slice(11)}（當地）`, warn = false;
+    if (ageMin > 90 && hi >= 0 && hi < c.hourly.temp.length) {
+      temp = c.hourly.temp[hi]; code = c.hourly.code[hi]; isDay = c.hourly.isDay[hi];
+      note = `資料已超過 ${Math.round(ageMin / 60)} 小時，氣溫與天氣改用逐時預報的這個小時推估`;
+    }
+    if (hi >= c.hourly.temp.length) { note = "資料已過期，請重新執行爬蟲更新"; warn = true; }
+    const uvNow = c.hourly.uv[hi] ?? null;
+    const dirName = cur.windDir == null ? "" : COMPASS[Math.round(cur.windDir / 45) % 8] + "風";
+    const air = c.air || {};
+    const aqiPct = Math.min(1, (air.aqi ?? 0) / 300);
+    const arc = (p) => { const a = Math.PI * (0.75 + 1.5 * p), r = 34; return `${42 + r * Math.cos(a)} ${42 + r * Math.sin(a)}`; };
+    const where = [c.admin, c.country].filter(Boolean).join(" · ");
+
+    $("current").innerHTML = `
+      <div class="place-head">
+        <h2 class="place-name">${c.name}</h2>
+        <span class="place-sub">${where} · <span class="num">${c.lat.toFixed(2)}°, ${c.lon.toFixed(2)}°</span>${c.elevation != null ? ` · 海拔 <span class="num">${Math.round(c.elevation)}</span> m` : ""}</span>
+      </div>
+      <div class="now">
+        <div class="now-icon">${icon(code, isDay)}</div>
+        <div>
+          <div class="now-temp">${Math.round(temp)}<sup>°C</sup></div>
+          <div class="now-desc">${wmo(code)[0]}</div>
+          <div class="now-hl">體感 <span class="num">${Math.round(cur.feels)}°</span> · 今日 <span class="num" style="color:var(--warm)">${Math.round(c.daily.max[di])}°</span> / <span class="num" style="color:var(--cool)">${Math.round(c.daily.min[di])}°</span></div>
+        </div>
+      </div>
+      <p class="note ${warn ? "warn" : ""}">${note}</p>
+      <div class="stats">
+        <div class="stat"><span class="label">相對濕度</span><b>${cur.rh}<small> %</small></b></div>
+        <div class="stat"><span class="label">風向風速</span><b><svg class="wind-arrow" viewBox="0 0 14 14" style="transform:rotate(${(cur.windDir ?? 0) + 180}deg)"><path d="M7 1l4 11-4-2.5L3 12z" fill="currentColor"/></svg> ${cur.wind}<small> km/h</small></b><span class="place-sub">${dirName}</span></div>
+        <div class="stat"><span class="label">陣風</span><b>${cur.gust}<small> km/h</small></b></div>
+        <div class="stat"><span class="label">海平面氣壓</span><b>${cur.pressure}<small> hPa</small></b></div>
+        <div class="stat"><span class="label">雲量</span><b>${cur.cloud}<small> %</small></b></div>
+        <div class="stat"><span class="label">降雨機率（今日）</span><b>${c.daily.pop[di] ?? "—"}<small> %</small></b></div>
+      </div>
+      <div class="air">
+        <svg class="aqi-dial" viewBox="0 0 84 84" aria-hidden="true">
+          <path d="M${arc(0)} A34 34 0 1 1 ${arc(1)}" fill="none" stroke="var(--line)" stroke-width="7" stroke-linecap="round"/>
+          ${air.aqi != null ? `<path d="M${arc(0)} A34 34 0 ${aqiPct > 2 / 3 ? 1 : 0} 1 ${arc(aqiPct)}" fill="none" stroke="var(--${aqiClass(air.aqi) || "muted"})" stroke-width="7" stroke-linecap="round"/>` : ""}
+          <text x="42" y="46" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="20" fill="var(--ink)">${air.aqi ?? "—"}</text>
+          <text x="42" y="62" text-anchor="middle" font-size="10" fill="var(--muted)">AQI</text>
+        </svg>
+        <div>
+          <div style="margin-bottom:6px">空氣品質 <span class="chip ${aqiClass(air.aqi)}">${air.level ?? "無資料"}</span></div>
+          <div class="air-rows">
+            <div><span>PM2.5</span> <b class="num">${air.pm25 ?? "—"}</b> <span>µg/m³</span></div>
+            <div><span>PM10</span> <b class="num">${air.pm10 ?? "—"}</b> <span>µg/m³</span></div>
+            <div><span>臭氧 O₃</span> <b class="num">${air.o3 ?? "—"}</b> <span>µg/m³</span></div>
+            <div><span>紫外線</span> <b class="num">${uvNow ?? "—"}</b> <span>${uvText(uvNow)} · 今日最高 ${c.daily.uvMax[di] ?? "—"}</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="sunline">
+        <span>日出 <b>${c.daily.sunrise[di]}</b></span>
+        <span>日落 <b>${c.daily.sunset[di]}</b></span>
+        <span>時區 <b>${c.tz}</b></span>
+      </div>`;
+  }
+
+  // ---------- 逐時圖（48 小時） ----------
+  function renderHourly() {
+    const c = state.sel, start = Math.max(0, nowIndex(c)), N = 48;
+    const svg = d3.select("#hourly"), colW = 30, W = N * colW + 20, H = 190;
+    svg.attr("width", W).attr("viewBox", `0 0 ${W} ${H}`).selectAll("*").remove();
+    const rows = d3.range(N).map(i => start + i).filter(i => i < c.hourly.temp.length).map(i => ({
+      i, t: c.hourly.temp[i], pop: c.hourly.pop[i] ?? 0, code: c.hourly.code[i], day: c.hourly.isDay[i],
+      ms: naiveMs(c.hourly.start) + i * 3600000,
+    }));
+    if (!rows.length) { svg.append("text").attr("x", 10).attr("y", 30).text("沒有可顯示的逐時資料，請重新執行爬蟲"); return; }
+    const x = (k) => 20 + k * colW + colW / 2;
+    const ext = d3.extent(rows, r => r.t);
+    const y = d3.scaleLinear().domain([ext[0] - 1, ext[1] + 1]).range([118, 58]);
+    const popY = d3.scaleLinear().domain([0, 100]).range([0, 26]);
+
+    // 降雨機率長條
+    svg.append("g").selectAll("rect").data(rows).join("rect")
+      .attr("x", (r, k) => x(k) - 9).attr("width", 18)
+      .attr("y", r => 160 - popY(r.pop)).attr("height", r => popY(r.pop))
+      .attr("rx", 2).attr("fill", "var(--cool)").attr("opacity", .55);
+    svg.append("line").attr("x1", 20).attr("x2", W).attr("y1", 160).attr("y2", 160).attr("stroke", "var(--line)");
+
+    // 換日分隔線
+    rows.forEach((r, k) => {
+      const hour = new Date(r.ms).getUTCHours();
+      if (hour === 0 && k > 0) {
+        const d = new Date(r.ms);
+        svg.append("line").attr("x1", x(k) - colW / 2).attr("x2", x(k) - colW / 2).attr("y1", 6).attr("y2", 176).attr("stroke", "var(--line)").attr("stroke-dasharray", "3 3");
+        svg.append("text").attr("class", "day-label").attr("x", x(k) - colW / 2 + 4).attr("y", 16).text(`${d.getUTCMonth() + 1}/${d.getUTCDate()} 週${WEEK[d.getUTCDay()]}`);
+      }
+    });
+    svg.append("text").attr("class", "now-mark").attr("x", x(0) - 10).attr("y", 16).text("現在");
+
+    // 溫度曲線 + 面積
+    const area = d3.area().x((r, k) => x(k)).y0(126).y1(r => y(r.t)).curve(d3.curveMonotoneX);
+    const line = d3.line().x((r, k) => x(k)).y(r => y(r.t)).curve(d3.curveMonotoneX);
+    svg.append("path").attr("d", area(rows)).attr("fill", "var(--warm)").attr("opacity", .1);
+    svg.append("path").attr("d", line(rows)).attr("fill", "none").attr("stroke", "var(--warm)").attr("stroke-width", 2);
+    svg.append("circle").attr("cx", x(0)).attr("cy", y(rows[0].t)).attr("r", 4).attr("fill", "var(--warm)");
+
+    rows.forEach((r, k) => {
+      if (k % 3 !== 0) return;
+      const g = svg.append("g");
+      g.append("text").attr("class", "t-label").attr("x", x(k)).attr("y", y(r.t) - 8).attr("text-anchor", "middle").text(`${Math.round(r.t)}°`);
+      g.append("g").attr("transform", `translate(${x(k) - 11},22)`).html(icon(r.code, r.day).replace("<svg ", '<svg width="22" height="22" '));
+      g.append("text").attr("x", x(k)).attr("y", 186).attr("text-anchor", "middle").text(`${pad(new Date(r.ms).getUTCHours())}時`);
+      if (r.pop > 0) g.append("text").attr("x", x(k)).attr("y", 172).attr("text-anchor", "middle").attr("fill", "var(--cool)").text(`${r.pop}%`);
+    });
+  }
+
+  // ---------- 7 天預報 ----------
+  function renderDays() {
+    const c = state.sel, d = c.daily, start = Math.max(0, todayIndex(c));
+    const idx = d3.range(start, d.date.length);
+    const lo = d3.min(idx, i => d.min[i]), hi = d3.max(idx, i => d.max[i]);
+    const pct = (v) => ((v - lo) / (hi - lo || 1)) * 100;
+    $("days").innerHTML = idx.map((i, k) => {
+      const dt = new Date(naiveMs(d.date[i]));
+      const name = k === 0 ? "今天" : k === 1 ? "明天" : `週${WEEK[dt.getUTCDay()]}`;
+      return `<div class="day">
+        <div class="dname">${name}<small>${dt.getUTCMonth() + 1}/${dt.getUTCDate()}</small></div>
+        <div style="width:32px;height:32px">${icon(d.code[i], 1)}</div>
+        <div class="desc">${wmo(d.code[i])[0]}${d.rain[i] ? ` · ${d.rain[i]} mm` : ""}</div>
+        <div class="pop num">☂ ${d.pop[i] ?? "—"}%</div>
+        <div class="lo num">${Math.round(d.min[i])}°</div>
+        <div class="bar"><i style="left:${pct(d.min[i])}%;width:${Math.max(3, pct(d.max[i]) - pct(d.min[i]))}%;background:linear-gradient(90deg,${tempColor(d.min[i])},${tempColor(d.max[i])})"></i></div>
+        <div class="hi num">${Math.round(d.max[i])}°</div>
+      </div>`;
+    }).join("");
+  }
+
+  // ---------- 地圖 ----------
+  const tempColor = (t) => d3.interpolateRdYlBu(1 - Math.max(0, Math.min(1, (t + 10) / 50)));
+  const projection = d3.geoNaturalEarth1();
+  const map = { svg: null, g: null, zoom: null, k: 1 };
+
+  function drawRamp() {
+    const cv = $("ramp"), ctx = cv.getContext("2d");
+    for (let i = 0; i < cv.width; i++) { ctx.fillStyle = tempColor(-10 + 50 * i / cv.width); ctx.fillRect(i, 0, 1, cv.height); }
+  }
+
+  function initMap(world) {
+    const svg = d3.select("#map"), W = 960, H = 500;
+    const land = topojson.feature(world, world.objects.countries);
+    projection.fitExtent([[6, 6], [W - 6, H - 6]], { type: "Sphere" });
+    const path = d3.geoPath(projection);
+    const g = svg.append("g");
+    g.append("path").attr("class", "graticule").attr("d", path(d3.geoGraticule10()));
+    g.append("g").selectAll("path").data(land.features).join("path").attr("class", "country").attr("d", path);
+    state.cities.forEach(c => { [c.px, c.py] = projection([c.lon, c.lat]); });
+    g.append("g").attr("class", "dots").selectAll("circle").data(state.cities, c => c.id).join("circle")
+      .attr("class", "dot").attr("cx", c => c.px).attr("cy", c => c.py).attr("r", 4)
+      .attr("fill", c => tempColor(c.current.temp))
+      .on("click", (ev, c) => { if (state.mode === "pick") { ev.stopPropagation(); select(c.id); } })
+      .append("title").text(c => `${c.name}（${c.country}）${Math.round(c.current.temp)}°C`);
+    g.append("text").attr("class", "sel-label");
+    const brush = g.append("rect").attr("class", "brush").attr("visibility", "hidden");
+
+    const zoom = d3.zoom().scaleExtent([1, 60]).translateExtent([[0, 0], [W, H]])
+      .filter(ev => state.mode === "pick" ? (!ev.ctrlKey || ev.type === "wheel") && !ev.button : ev.type === "wheel")
+      .on("zoom", (ev) => { map.k = ev.transform.k; g.attr("transform", ev.transform); restyleDots(); });
+    svg.call(zoom).on("dblclick.zoom", null);
+    Object.assign(map, { svg, g, zoom });
+
+    svg.on("click", (ev) => {
+      if (state.mode !== "pick" || ev.defaultPrevented) return;
+      const t = d3.zoomTransform(svg.node());
+      const ll = projection.invert(t.invert(d3.pointer(ev, svg.node())));
+      if (!ll || isNaN(ll[0])) return;
+      let best = null, bestD = Infinity;
+      state.cities.forEach(c => { const dd = d3.geoDistance(ll, [c.lon, c.lat]); if (dd < bestD) { bestD = dd; best = c; } });
+      if (best) { select(best.id); $("mapHint").textContent = `你點的位置最近的觀測點是 ${best.name}，相距約 ${Math.round(bestD * 6371)} 公里。`; }
+    });
+
+    // 框選範圍：在 SVG 座標拖曳出矩形，再找出落在框內的觀測點
+    let origin = null;
+    svg.on("pointerdown", (ev) => {
+      if (state.mode !== "box") return;
+      const t = d3.zoomTransform(svg.node());
+      origin = t.invert(d3.pointer(ev, svg.node()));
+      svg.node().setPointerCapture(ev.pointerId);
+      brush.attr("visibility", "visible").attr("x", origin[0]).attr("y", origin[1]).attr("width", 0).attr("height", 0);
+    }).on("pointermove", (ev) => {
+      if (!origin) return;
+      const p = d3.zoomTransform(svg.node()).invert(d3.pointer(ev, svg.node()));
+      brush.attr("x", Math.min(origin[0], p[0])).attr("y", Math.min(origin[1], p[1]))
+        .attr("width", Math.abs(p[0] - origin[0])).attr("height", Math.abs(p[1] - origin[1]));
+    }).on("pointerup pointercancel", () => {
+      if (!origin) return;
+      origin = null;
+      const x0 = +brush.attr("x"), y0 = +brush.attr("y"), x1 = x0 + +brush.attr("width"), y1 = y0 + +brush.attr("height");
+      if (x1 - x0 < 2 && y1 - y0 < 2) { brush.attr("visibility", "hidden"); return; }
+      state.boxIds = state.cities.filter(c => c.px >= x0 && c.px <= x1 && c.py >= y0 && c.py <= y1).map(c => c.id);
+      const nw = projection.invert([x0, y0]), se = projection.invert([x1, y1]);
+      renderRange(nw, se);
+      restyleDots();
+    });
+  }
+
+  function restyleDots() {
+    const k = map.k, boxSet = new Set(state.boxIds);
+    map.g.selectAll(".dot")
+      .attr("r", c => (c === state.sel ? 7 : boxSet.size && !boxSet.has(c.id) ? 2.5 : 4.2) / k)
+      .attr("opacity", c => boxSet.size && !boxSet.has(c.id) && c !== state.sel ? .35 : 1)
+      .classed("sel", c => c === state.sel);
+    const s = state.sel;
+    if (s) map.g.select(".sel-label").attr("x", s.px + 10 / k).attr("y", s.py + 4 / k)
+      .attr("font-size", 13 / k).attr("stroke-width", 3 / k).text(s.name);
+    map.g.select(".brush").attr("stroke-width", 1.5);
+    map.g.selectAll(".dot.sel").raise();
+  }
+
+  function zoomTo(c, k = 10) {
+    const [W, H] = [960, 500];
+    map.svg.transition().duration(600).call(map.zoom.transform, d3.zoomIdentity.translate(W / 2, H / 2).scale(k).translate(-c.px, -c.py));
+  }
+
+  function renderRange(nw, se) {
+    const box = $("range"), list = state.boxIds.map(id => state.byId.get(id));
+    box.hidden = false;
+    const fmtLL = (p) => p ? `${p[1].toFixed(1)}°, ${p[0].toFixed(1)}°` : "—";
+    if (!list.length) {
+      box.innerHTML = `<h2>框選範圍</h2><p class="note">這個範圍內沒有觀測點，試著框大一點，或放大地圖後再框。</p>`;
+      return;
+    }
+    const temps = list.map(c => c.current.temp);
+    const hot = list.reduce((a, b) => b.current.temp > a.current.temp ? b : a);
+    const cold = list.reduce((a, b) => b.current.temp < a.current.temp ? b : a);
+    const popAvg = d3.mean(list, c => c.daily.pop[Math.max(0, todayIndex(c))] ?? 0);
+    box.innerHTML = `
+      <h2>框選範圍 · ${list.length} 個觀測點</h2>
+      <p class="place-sub">西北角 <span class="num">${fmtLL(nw)}</span> → 東南角 <span class="num">${fmtLL(se)}</span></p>
+      <div class="range-sum">
+        <div><span class="label">平均氣溫</span><b>${d3.mean(temps).toFixed(1)}°</b></div>
+        <div><span class="label">最高</span><b style="color:var(--warm)">${Math.round(hot.current.temp)}°</b><span class="place-sub">${hot.name}</span></div>
+        <div><span class="label">最低</span><b style="color:var(--cool)">${Math.round(cold.current.temp)}°</b><span class="place-sub">${cold.name}</span></div>
+        <div><span class="label">今日平均降雨機率</span><b>${Math.round(popAvg)}%</b></div>
+      </div>
+      <div class="range-list">${list.sort((a, b) => b.current.temp - a.current.temp).map(c =>
+        `<button data-id="${c.id}">${c.name}<span class="num">${Math.round(c.current.temp)}°</span></button>`).join("")}</div>
+      <p class="map-hint"><button id="clearBox" class="chip" style="background:none;cursor:pointer;color:var(--muted)">清除框選</button></p>`;
+    box.querySelectorAll(".range-list button").forEach(b => b.addEventListener("click", () => select(b.dataset.id)));
+    $("clearBox").addEventListener("click", clearBox);
+  }
+
+  function clearBox() {
+    state.boxIds = [];
+    $("range").hidden = true;
+    map.g.select(".brush").attr("visibility", "hidden");
+    restyleDots();
+  }
+
+  function setMode(m) {
+    state.mode = m;
+    $("modePick").setAttribute("aria-pressed", m === "pick");
+    $("modeBox").setAttribute("aria-pressed", m === "box");
+    $("map").classList.toggle("boxing", m === "box");
+    $("mapHint").textContent = m === "box"
+      ? "在地圖上拖曳出一個矩形，統計範圍內所有觀測點。滾輪仍可縮放。"
+      : "點地圖任一處，會選到最近的觀測點。滾輪或雙指可縮放。";
+  }
+
+  // ---------- 選擇器：國家 → 城市、搜尋 ----------
+  function fillCountries() {
+    const regions = d3.group(state.cities, c => c.region);
+    const order = ["Asia", "Europe", "North America", "South America", "Africa", "Oceania"];
+    const zh = { "Asia": "亞洲", "Europe": "歐洲", "North America": "北美洲", "South America": "南美洲", "Africa": "非洲", "Oceania": "大洋洲" };
+    $("country").innerHTML = order.filter(r => regions.has(r)).map(r => {
+      const cs = [...d3.group(regions.get(r), c => c.cc)].map(([cc, arr]) => ({ cc, name: arr[0].country, n: arr.length }));
+      return `<optgroup label="${zh[r]}">${cs.map(x => `<option value="${x.cc}">${x.name}（${x.n}）</option>`).join("")}</optgroup>`;
+    }).join("");
+  }
+  function fillCities(cc) {
+    const list = state.cities.filter(c => c.cc === cc);
+    const tops = list.filter(c => !c.admin || !list.some(p => p.name === c.admin));
+    const subs = d3.group(list.filter(c => !tops.includes(c)), c => c.admin);
+    $("city").innerHTML = `<optgroup label="${cc === "TW" ? "縣市" : "城市"}">${tops.map(c => `<option value="${c.id}">${c.name}${c.admin && cc !== "TW" ? `（${c.admin}）` : ""}</option>`).join("")}</optgroup>` +
+      [...subs].map(([a, arr]) => `<optgroup label="${a}">${arr.map(c => `<option value="${c.id}">${c.name}</option>`).join("")}</optgroup>`).join("");
+  }
+
+  let hits = [], hitIdx = -1;
+  function searchUpdate() {
+    const q = $("search").value.trim().toLowerCase().replace(/台/g, "臺");
+    const ul = $("suggest");
+    if (!q) { ul.hidden = true; $("search").setAttribute("aria-expanded", "false"); return; }
+    hits = state.cities.filter(c => [c.name, c.nameEn, c.admin, c.country, c.countryEn].join(" ").toLowerCase().includes(q)).slice(0, 12);
+    hitIdx = hits.length ? 0 : -1;
+    ul.innerHTML = hits.length
+      ? hits.map((c, i) => `<li role="option" id="opt${i}" data-id="${c.id}" aria-selected="${i === 0}"><span>${c.name} <small>${c.nameEn}</small></span><small>${[c.admin, c.country].filter(Boolean).join(" · ")}</small></li>`).join("")
+      : `<li aria-disabled="true"><small>找不到「${$("search").value.trim()}」。資料包含 ${state.cities.length} 個地點，可改用國家選單瀏覽。</small></li>`;
+    ul.hidden = false;
+    $("search").setAttribute("aria-expanded", "true");
+  }
+  function moveHit(d) {
+    if (!hits.length) return;
+    hitIdx = (hitIdx + d + hits.length) % hits.length;
+    $("suggest").querySelectorAll("li").forEach((li, i) => li.setAttribute("aria-selected", i === hitIdx));
+    $("search").setAttribute("aria-activedescendant", `opt${hitIdx}`);
+  }
+  function pickHit(id) {
+    $("suggest").hidden = true; $("search").value = ""; $("search").setAttribute("aria-expanded", "false");
+    select(id, { zoom: true });
+  }
+
+  // ---------- 選擇地點：所有區塊一起更新 ----------
+  function select(id, opts = {}) {
+    const c = state.byId.get(id);
+    if (!c) return;
+    state.sel = c;
+    $("country").value = c.cc;
+    fillCities(c.cc);
+    $("city").value = c.id;
+    try { localStorage.setItem("skywatch.city", c.id); } catch (e) { /* 無痕模式等情況可忽略 */ }
+    renderCurrent(); renderHourly(); renderDays(); restyleDots(); tick();
+    if (opts.zoom) zoomTo(c, c.cc === "TW" ? 14 : 6);
+  }
+
+  // ---------- 啟動 ----------
+  async function boot() {
+    drawRamp();
+    setInterval(tick, 1000); tick();
+    try {
+      const [data, world] = await Promise.all([
+        fetch("data/weather.json").then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+        fetch("data/world-110m.json").then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+      ]);
+      state.data = data; state.cities = data.cities;
+      data.cities.forEach(c => state.byId.set(c.id, c));
+      renderFreshness();
+      fillCountries();
+      initMap(world);
+      let start = "TW-taipei";
+      try { const saved = localStorage.getItem("skywatch.city"); if (saved && state.byId.has(saved)) start = saved; } catch (e) { }
+      select(start);
+    } catch (err) {
+      $("current").innerHTML = `<p class="note warn">讀不到天氣資料（${err.message}）。請確認 data/weather.json 已和網頁一起發布。</p>`;
+    }
+
+    $("country").addEventListener("change", (e) => { fillCities(e.target.value); select($("city").value, { zoom: true }); });
+    $("city").addEventListener("change", (e) => select(e.target.value, { zoom: true }));
+    $("search").addEventListener("input", searchUpdate);
+    $("search").addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown") { e.preventDefault(); moveHit(1); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); moveHit(-1); }
+      else if (e.key === "Enter" && hits[hitIdx]) { e.preventDefault(); pickHit(hits[hitIdx].id); }
+      else if (e.key === "Escape") { $("suggest").hidden = true; }
+    });
+    $("suggest").addEventListener("mousedown", (e) => { const li = e.target.closest("li[data-id]"); if (li) { e.preventDefault(); pickHit(li.dataset.id); } });
+    $("search").addEventListener("blur", () => setTimeout(() => { $("suggest").hidden = true; }, 100));
+    $("modePick").addEventListener("click", () => setMode("pick"));
+    $("modeBox").addEventListener("click", () => setMode("box"));
+    $("zoomIn").addEventListener("click", () => map.svg.transition().call(map.zoom.scaleBy, 2));
+    $("zoomOut").addEventListener("click", () => map.svg.transition().call(map.zoom.scaleBy, .5));
+    $("zoomReset").addEventListener("click", () => map.svg.transition().call(map.zoom.transform, d3.zoomIdentity));
+    $("zoomSel").addEventListener("click", () => state.sel && zoomTo(state.sel, state.sel.cc === "TW" ? 14 : 6));
+  }
+  boot();
+})();
+</script>
+</body>
+</html>
