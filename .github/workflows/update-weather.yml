@@ -1,0 +1,48 @@
+# 每小時執行一次爬蟲，把最新天氣資料連同網頁部署到 GitHub Pages
+name: 更新天氣資料
+
+on:
+  schedule:
+    - cron: "7 * * * *"   # 每小時第 7 分（UTC，GitHub 尖峰時段可能延遲幾分鐘）
+  push:
+    branches: [main]
+  workflow_dispatch:        # 允許在 Actions 頁面手動按「Run workflow」
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+
+      - name: 安裝 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 執行爬蟲
+        run: python weather_crawler.py
+
+      - name: 設定 Pages
+        uses: actions/configure-pages@v5
+
+      - name: 上傳網頁檔案
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: 部署到 GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
